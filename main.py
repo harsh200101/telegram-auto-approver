@@ -2,11 +2,12 @@ import os
 import sys
 import asyncio
 import logging
+import traceback
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from aiohttp import web
 
-# Set up logging to stdout with immediate flush
+# Set up logging with immediate flush
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -29,33 +30,10 @@ APPROVE_KEYWORDS = [k.strip() for k in KEYWORDS_RAW.split(",") if k.strip()]
 # SAFETY SWITCH: Default False (paused)
 AUTO_APPROVE_ENABLED = os.environ.get("AUTO_APPROVE_ENABLED", "false").lower() in ("true", "1", "yes")
 
-if not API_ID_ENV or not API_HASH:
-    logger.error("Missing API_ID or API_HASH!")
-    sys.exit(1)
+# Global reference to client for status queries
+telegram_client = None
 
-try:
-    API_ID = int(API_ID_ENV)
-except ValueError:
-    logger.error("TELEGRAM_API_ID must be an integer!")
-    sys.exit(1)
-
-# Check session string
-if not SESSION_STRING:
-    local_file = os.path.join(os.path.dirname(__file__), ".session_string.txt")
-    if os.path.exists(local_file):
-        with open(local_file, "r", encoding="utf-8") as f:
-            SESSION_STRING = f.read().strip()
-
-if not SESSION_STRING:
-    logger.error("Missing TELEGRAM_SESSION_STRING! Run generate_session.py first.")
-    sys.exit(1)
-
-# Initialize Telethon Client with StringSession
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-
-@client.on(events.NewMessage)
 async def on_new_message(event):
-    # Only process messages that have inline buttons
     message = event.message
     if not message or not message.buttons:
         return
@@ -79,12 +57,11 @@ async def on_new_message(event):
     preview = (message.text or "").replace("\n", " ")[:60]
     logger.info(f"📩 Target button message received from [{sender_name}]: \"{preview}...\"")
 
-    # Iterate through all buttons
+    # Scan buttons
     for row in message.buttons:
         for button in row:
             button_label = (button.text or "").strip().lower()
             
-            # Check if any approve keyword matches the button label
             if any(kw in button_label for kw in APPROVE_KEYWORDS):
                 global AUTO_APPROVE_ENABLED
                 if not AUTO_APPROVE_ENABLED:
@@ -94,7 +71,7 @@ async def on_new_message(event):
                     )
                     return
 
-                logger.info(f"⚡ Matching button found: '{button.text}'. Attempting click...")
+                logger.info(f"⚡ Matching button found: '{button.text}'. Clicking now...")
                 try:
                     await button.click()
                     logger.info(f"✅ Successfully clicked button: '{button.text}'")
@@ -134,18 +111,45 @@ async def start_web_server():
     logger.info(f"🌐 Keep-Alive HTTP server listening on 0.0.0.0:{port}")
 
 async def main():
-    # 1. Start HTTP server first so Render port-binding passes immediately
+    global telegram_client
+    
+    # 1. Start HTTP server FIRST so Render port-binding succeeds immediately
     await start_web_server()
 
-    # 2. Connect client using pre-authorized StringSession (Never prompts for input!)
-    logger.info("Connecting to Telegram via StringSession...")
-    await client.connect()
-
-    if not await client.is_user_authorized():
-        logger.error("❌ Session string is not authorized! Please re-generate session string.")
+    # 2. Validate configuration
+    if not API_ID_ENV or not API_HASH:
+        logger.error("Missing API_ID or API_HASH!")
         sys.exit(1)
 
-    me = await client.get_me()
+    api_id = int(API_ID_ENV)
+    session_str = SESSION_STRING
+
+    if not session_str:
+        local_file = os.path.join(os.path.dirname(__file__), ".session_string.txt")
+        if os.path.exists(local_file):
+            with open(local_file, "r", encoding="utf-8") as f:
+                session_str = f.read().strip()
+
+    if not session_str:
+        logger.error("Missing TELEGRAM_SESSION_STRING!")
+        sys.exit(1)
+
+    # 3. Instantiate TelegramClient INSIDE the running asyncio loop
+    logger.info("Initializing Telegram client inside async loop...")
+    telegram_client = TelegramClient(StringSession(session_str), api_id, API_HASH)
+    
+    # 4. Attach event handler
+    telegram_client.add_event_handler(on_new_message, events.NewMessage())
+
+    # 5. Connect
+    logger.info("Connecting to Telegram...")
+    await telegram_client.connect()
+
+    if not await telegram_client.is_user_authorized():
+        logger.error("❌ Session string is not authorized!")
+        sys.exit(1)
+
+    me = await telegram_client.get_me()
     logger.info(f"🎉 Telegram client connected as: {me.first_name} (@{me.username or me.phone})")
     
     mode_str = "🟢 ACTIVE (WILL CLICK)" if AUTO_APPROVE_ENABLED else "🟡 PAUSED (SAFETY MODE - WILL NOT CLICK)"
@@ -153,8 +157,14 @@ async def main():
     logger.info(f"Target chat: {TARGET_CHAT}")
     logger.info(f"Keywords: {APPROVE_KEYWORDS}")
 
-    # 3. Run continuously
-    await client.run_until_disconnected()
+    # 6. Run continuously
+    await telegram_client.run_until_disconnected()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    except Exception as e:
+        logger.critical(f"Fatal error in main: {e}\n{traceback.format_exc()}")
+        sys.exit(1)
