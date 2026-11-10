@@ -18,11 +18,12 @@ API_ID_ENV = os.environ.get("TELEGRAM_API_ID", "32751734")
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "6107561583effd9e9d245e7a46e839a4")
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING")
 
-# Target chat/bot filter (Optional). If empty, monitors messages with buttons
-TARGET_CHAT = os.environ.get("TARGET_CHAT", "").strip() or None
+# Target chat/bot filter: Locked strictly to @Harshtradebot
+TARGET_CHAT = os.environ.get("TARGET_CHAT", "@Harshtradebot").strip()
 
 # Keywords to match on button text (comma-separated, case-insensitive)
-KEYWORDS_RAW = os.environ.get("APPROVE_KEYWORDS", "approve,allow,confirm").lower()
+# Supports "[ ✅ ALLOW ]", "ALLOW", "APPROVE", etc.
+KEYWORDS_RAW = os.environ.get("APPROVE_KEYWORDS", "allow,approve,confirm").lower()
 APPROVE_KEYWORDS = [k.strip() for k in KEYWORDS_RAW.split(",") if k.strip()]
 
 # SAFETY SWITCH: Kept FALSE by default until you explicitly instruct to enable it!
