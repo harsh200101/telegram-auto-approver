@@ -1,49 +1,40 @@
 """
 Telegram Session String Generator
-Run this script ONCE on your computer to log in and get your TELEGRAM_SESSION_STRING.
-This string is what allows Render to connect without ever asking for an SMS/OTP in production.
+Your API ID and API HASH are already pre-filled below!
+Run this script:
+    python generate_session.py
+It will ask for:
+  1. Your phone number (with country code, e.g. +91...)
+  2. The Telegram login code sent to your Telegram app
+Then it will automatically save your TELEGRAM_SESSION_STRING.
 """
 
 import sys
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
 
-try:
-    from telethon.sync import TelegramClient
-    from telethon.sessions import StringSession
-except ImportError:
-    print("\n❌ Telethon is not installed.")
-    print("Run: pip install telethon\n")
-    sys.exit(1)
+API_ID = 32751734
+API_HASH = "6107561583effd9e9d245e7a46e839a4"
 
 def main():
     print("=" * 60)
-    print("  TELEGRAM SESSION STRING GENERATOR FOR RENDER")
+    print("  TELEGRAM SESSION STRING GENERATOR")
     print("=" * 60)
-    print("Get your API ID and API HASH from: https://my.telegram.org (under 'API development tools')\n")
+    print("Connecting with your API ID: 32751734...")
+    print("Please enter your phone number when prompted.\n")
 
-    api_id_str = input("Enter API ID: ").strip()
-    api_hash = input("Enter API HASH: ").strip()
-
-    if not api_id_str.isdigit():
-        print("❌ Error: API ID must be a number!")
-        return
-
-    api_id = int(api_id_str)
-
-    print("\nConnecting to Telegram... (You will be prompted for your phone number and Telegram login code)")
-    
-    with TelegramClient(StringSession(), api_id, api_hash) as client:
+    with TelegramClient(StringSession(), API_ID, API_HASH) as client:
         session_str = client.session.save()
         print("\n" + "=" * 60)
         print("🎉 SUCCESS! HERE IS YOUR TELEGRAM_SESSION_STRING:")
         print("=" * 60)
         print(session_str)
         print("=" * 60)
-        print("\nKeep this string safe! Save it in your Render Environment Variables.")
 
-        # Also write it locally to .env.local for convenience
+        # Save to file
         with open(".session_string.txt", "w", encoding="utf-8") as f:
             f.write(session_str)
-        print("Saved a copy to .session_string.txt (do not commit this file to git!).\n")
+        print("\n✅ Automatically saved to .session_string.txt")
 
 if __name__ == "__main__":
     main()
