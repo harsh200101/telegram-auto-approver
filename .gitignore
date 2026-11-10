@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.env.local
+.session_string.txt
+*.session
+venv/
+.venv/
