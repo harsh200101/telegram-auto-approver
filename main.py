@@ -3,6 +3,7 @@ import sys
 import asyncio
 import logging
 import traceback
+from datetime import datetime, timezone
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from aiohttp import web
@@ -20,22 +21,50 @@ API_ID_ENV = os.environ.get("TELEGRAM_API_ID", "32751734")
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "6107561583effd9e9d245e7a46e839a4")
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING")
 
-# Target chat/bot filter
+# Target chat/bot filter: locked to @Harshtradebot
 TARGET_CHAT = os.environ.get("TARGET_CHAT", "@Harshtradebot").strip()
 
 # Keywords to match on button text (comma-separated, case-insensitive)
 KEYWORDS_RAW = os.environ.get("APPROVE_KEYWORDS", "allow,approve,confirm").lower()
 APPROVE_KEYWORDS = [k.strip() for k in KEYWORDS_RAW.split(",") if k.strip()]
 
-# SAFETY SWITCH: Default False (paused)
-AUTO_APPROVE_ENABLED = os.environ.get("AUTO_APPROVE_ENABLED", "false").lower() in ("true", "1", "yes")
+# AUTO_APPROVE_ENABLED defaults to True now that user activated it!
+AUTO_APPROVE_ENABLED = os.environ.get("AUTO_APPROVE_ENABLED", "true").lower() in ("true", "1", "yes")
 
 # Global reference to client for status queries
 telegram_client = None
 
+# Statistics tracker
+stats = {
+    "started_at": datetime.now(timezone.utc).isoformat(),
+    "messages_received": 0,
+    "target_messages_matched": 0,
+    "buttons_detected": 0,
+    "buttons_clicked": 0,
+    "last_clicked_at": None,
+    "last_clicked_text": None,
+    "recent_events": []
+}
+
+def log_event(event_type, details):
+    entry = {
+        "time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "type": event_type,
+        "details": details
+    }
+    stats["recent_events"].insert(0, entry)
+    if len(stats["recent_events"]) > 20:
+        stats["recent_events"].pop()
+
 async def on_new_message(event):
     message = event.message
-    if not message or not message.buttons:
+    if not message:
+        return
+
+    stats["messages_received"] += 1
+
+    # Only process messages that have inline buttons
+    if not message.buttons:
         return
 
     # Filter by target chat/bot if configured
@@ -53,13 +82,16 @@ async def on_new_message(event):
         if not (matches_username or matches_title or matches_id):
             return
 
+    stats["target_messages_matched"] += 1
     sender_name = getattr(event.chat, 'title', None) or getattr(event.chat, 'username', None) or str(event.chat_id)
     preview = (message.text or "").replace("\n", " ")[:60]
     logger.info(f"📩 Target button message received from [{sender_name}]: \"{preview}...\"")
+    log_event("MESSAGE_RECEIVED", f"From {sender_name}: {preview}")
 
     # Scan buttons
     for row in message.buttons:
         for button in row:
+            stats["buttons_detected"] += 1
             button_label = (button.text or "").strip().lower()
             
             if any(kw in button_label for kw in APPROVE_KEYWORDS):
@@ -69,15 +101,21 @@ async def on_new_message(event):
                         f"⏸️ SAFETY PAUSE ACTIVE: Found button '{button.text}', "
                         f"but AUTO_APPROVE_ENABLED is false. Not clicking."
                     )
+                    log_event("PAUSED_SKIPPED", f"Button '{button.text}' seen but auto-approve is disabled.")
                     return
 
                 logger.info(f"⚡ Matching button found: '{button.text}'. Clicking now...")
                 try:
                     await button.click()
-                    logger.info(f"✅ Successfully clicked button: '{button.text}'")
+                    stats["buttons_clicked"] += 1
+                    stats["last_clicked_at"] = datetime.now(timezone.utc).isoformat()
+                    stats["last_clicked_text"] = button.text
+                    logger.info(f"✅ Successfully clicked button: '{button.text}' (Total clicked: {stats['buttons_clicked']})")
+                    log_event("BUTTON_CLICKED", f"Successfully clicked '{button.text}'")
                     return
                 except Exception as err:
                     logger.error(f"❌ Failed to click button '{button.text}': {err}")
+                    log_event("CLICK_ERROR", f"Error on '{button.text}': {str(err)}")
 
 # Endpoint to toggle auto-approve on/off dynamically via HTTP
 async def toggle_approver(request):
@@ -89,17 +127,32 @@ async def toggle_approver(request):
         AUTO_APPROVE_ENABLED = False
     
     status = "ENABLED (ACTIVE)" if AUTO_APPROVE_ENABLED else "DISABLED (PAUSED)"
+    log_event("MODE_TOGGLE", f"Switched to {status}")
     return web.Response(text=f"Auto-Approver status: {status}\n")
 
 # Health check
 async def health_check(request):
     status = "ACTIVE" if AUTO_APPROVE_ENABLED else "PAUSED (SAFE MODE)"
-    return web.Response(text=f"OK - Service is alive. Mode: {status}\n", status=200)
+    return web.Response(
+        text=f"OK - Service is alive. Mode: {status}. Total Approved: {stats['buttons_clicked']}\n",
+        status=200
+    )
+
+# Stats endpoint (JSON)
+async def stats_endpoint(request):
+    data = {
+        "status": "ACTIVE" if AUTO_APPROVE_ENABLED else "PAUSED",
+        "target_chat": TARGET_CHAT,
+        "keywords": APPROVE_KEYWORDS,
+        "stats": stats
+    }
+    return web.json_response(data)
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", health_check)
     app.router.add_get("/health", health_check)
+    app.router.add_get("/stats", stats_endpoint)
     app.router.add_get("/toggle", toggle_approver)
 
     runner = web.AppRunner(app)
