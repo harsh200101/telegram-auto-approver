@@ -21,11 +21,12 @@ API_ID_ENV = os.environ.get("TELEGRAM_API_ID", "32751734")
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "6107561583effd9e9d245e7a46e839a4")
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING")
 
-# Target chat/bot filter: locked to @Harshtradebot
-TARGET_CHAT = os.environ.get("TARGET_CHAT", "@Harshtradebot").strip()
+# Target chat/bot filter: Supports @Harshtradetbot, @Harshtradebot, TraderBot
+TARGET_CHATS_RAW = os.environ.get("TARGET_CHAT", "Harshtradetbot,Harshtradebot,TraderBot").lower()
+TARGET_CHATS = [c.strip().lstrip("@") for c in TARGET_CHATS_RAW.split(",") if c.strip()]
 
 # Keywords to match on button text (comma-separated, case-insensitive)
-KEYWORDS_RAW = os.environ.get("APPROVE_KEYWORDS", "allow,approve,confirm").lower()
+KEYWORDS_RAW = os.environ.get("APPROVE_KEYWORDS", "approve,allow,confirm").lower()
 APPROVE_KEYWORDS = [k.strip() for k in KEYWORDS_RAW.split(",") if k.strip()]
 
 # AUTO_APPROVE_ENABLED defaults to True
@@ -42,6 +43,7 @@ stats = {
     "buttons_clicked": 0,
     "last_clicked_at": None,
     "last_clicked_text": None,
+    "last_trade_text": None,
     "recent_events": []
 }
 
@@ -66,24 +68,24 @@ async def on_new_message(event):
     if not message.buttons:
         return
 
-    # Filter by target chat/bot if configured
-    if TARGET_CHAT:
+    # Filter by target chat/bot
+    if TARGET_CHATS:
         sender = await event.get_sender()
-        sender_username = getattr(sender, "username", "") or ""
-        chat_title = getattr(event.chat, "title", "") or ""
+        sender_username = (getattr(sender, "username", "") or "").lower()
+        sender_first_name = (getattr(sender, "first_name", "") or "").lower()
+        chat_title = (getattr(event.chat, "title", "") or "").lower()
         chat_id_str = str(event.chat_id)
         
-        target_clean = TARGET_CHAT.lstrip("@").lower()
-        matches_username = sender_username.lower() == target_clean
-        matches_title = target_clean in chat_title.lower()
-        matches_id = chat_id_str == target_clean
-        
-        if not (matches_username or matches_title or matches_id):
+        matches = any(
+            t in sender_username or t in sender_first_name or t in chat_title or t == chat_id_str
+            for t in TARGET_CHATS
+        )
+        if not matches:
             return
 
     stats["target_messages_matched"] += 1
     sender_name = getattr(event.chat, 'title', None) or getattr(event.chat, 'username', None) or str(event.chat_id)
-    preview = (message.text or "").replace("\n", " ")[:60]
+    preview = (message.text or "").replace("\n", " ")[:70]
     logger.info(f"📩 Target button message received from [{sender_name}]: \"{preview}...\"")
     log_event("MESSAGE_RECEIVED", f"From {sender_name}: {preview}")
 
@@ -105,12 +107,15 @@ async def on_new_message(event):
 
                 logger.info(f"⚡ Matching button found: '{button.text}'. Clicking now...")
                 try:
-                    await button.click()
+                    res = await button.click()
                     stats["buttons_clicked"] += 1
                     stats["last_clicked_at"] = datetime.now(timezone.utc).isoformat()
                     stats["last_clicked_text"] = button.text
-                    logger.info(f"✅ Successfully clicked button: '{button.text}' (Total clicked: {stats['buttons_clicked']})")
-                    log_event("BUTTON_CLICKED", f"Successfully clicked '{button.text}'")
+                    stats["last_trade_text"] = preview
+                    
+                    callback_msg = getattr(res, 'message', '') or ''
+                    logger.info(f"✅ Successfully clicked button: '{button.text}'! Telegram response: {callback_msg} (Total clicked: {stats['buttons_clicked']})")
+                    log_event("BUTTON_CLICKED", f"Clicked '{button.text}' -> {callback_msg}")
                     return
                 except Exception as err:
                     logger.error(f"❌ Failed to click button '{button.text}': {err}")
@@ -138,7 +143,7 @@ async def toggle_approver(request):
 async def stats_endpoint(request):
     data = {
         "status": "ACTIVE" if AUTO_APPROVE_ENABLED else "PAUSED",
-        "target_chat": TARGET_CHAT,
+        "target_chats": TARGET_CHATS,
         "keywords": APPROVE_KEYWORDS,
         "stats": stats
     }
@@ -146,7 +151,6 @@ async def stats_endpoint(request):
 
 async def start_web_server():
     app = web.Application()
-    # Support both GET and HEAD for pinging
     app.router.add_route("*", "/", ping_handler)
     app.router.add_route("*", "/ping", ping_handler)
     app.router.add_route("*", "/health", ping_handler)
@@ -205,7 +209,7 @@ async def main():
     
     mode_str = "🟢 ACTIVE (WILL CLICK)" if AUTO_APPROVE_ENABLED else "🟡 PAUSED (SAFETY MODE - WILL NOT CLICK)"
     logger.info(f"Current State: {mode_str}")
-    logger.info(f"Target chat: {TARGET_CHAT}")
+    logger.info(f"Target chats: {TARGET_CHATS}")
     logger.info(f"Keywords: {APPROVE_KEYWORDS}")
 
     # 6. Run continuously
