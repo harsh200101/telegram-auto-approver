@@ -28,10 +28,9 @@ TARGET_CHAT = os.environ.get("TARGET_CHAT", "@Harshtradebot").strip()
 KEYWORDS_RAW = os.environ.get("APPROVE_KEYWORDS", "allow,approve,confirm").lower()
 APPROVE_KEYWORDS = [k.strip() for k in KEYWORDS_RAW.split(",") if k.strip()]
 
-# AUTO_APPROVE_ENABLED defaults to True now that user activated it!
+# AUTO_APPROVE_ENABLED defaults to True
 AUTO_APPROVE_ENABLED = os.environ.get("AUTO_APPROVE_ENABLED", "true").lower() in ("true", "1", "yes")
 
-# Global reference to client for status queries
 telegram_client = None
 
 # Statistics tracker
@@ -117,7 +116,12 @@ async def on_new_message(event):
                     logger.error(f"❌ Failed to click button '{button.text}': {err}")
                     log_event("CLICK_ERROR", f"Error on '{button.text}': {str(err)}")
 
-# Endpoint to toggle auto-approve on/off dynamically via HTTP
+# Ultra-lightweight ping handler (returns 2 bytes "OK" to satisfy cron-job limits)
+async def ping_handler(request):
+    if request.method == "HEAD":
+        return web.Response(status=200, headers={"Content-Length": "0"})
+    return web.Response(text="OK", content_type="text/plain", status=200)
+
 async def toggle_approver(request):
     global AUTO_APPROVE_ENABLED
     action = request.query.get("action", "").lower()
@@ -129,14 +133,6 @@ async def toggle_approver(request):
     status = "ENABLED (ACTIVE)" if AUTO_APPROVE_ENABLED else "DISABLED (PAUSED)"
     log_event("MODE_TOGGLE", f"Switched to {status}")
     return web.Response(text=f"Auto-Approver status: {status}\n")
-
-# Health check
-async def health_check(request):
-    status = "ACTIVE" if AUTO_APPROVE_ENABLED else "PAUSED (SAFE MODE)"
-    return web.Response(
-        text=f"OK - Service is alive. Mode: {status}. Total Approved: {stats['buttons_clicked']}\n",
-        status=200
-    )
 
 # Stats endpoint (JSON)
 async def stats_endpoint(request):
@@ -150,8 +146,10 @@ async def stats_endpoint(request):
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/health", health_check)
+    # Support both GET and HEAD for pinging
+    app.router.add_route("*", "/", ping_handler)
+    app.router.add_route("*", "/ping", ping_handler)
+    app.router.add_route("*", "/health", ping_handler)
     app.router.add_get("/stats", stats_endpoint)
     app.router.add_get("/toggle", toggle_approver)
 
@@ -161,7 +159,7 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"🌐 Keep-Alive HTTP server listening on 0.0.0.0:{port}")
+    logger.info(f"🌐 Ultra-light Keep-Alive HTTP server listening on 0.0.0.0:{port}")
 
 async def main():
     global telegram_client
